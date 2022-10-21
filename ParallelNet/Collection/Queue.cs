@@ -9,6 +9,10 @@ using System.Threading.Tasks;
 
 namespace ParallelNet.Collection
 {
+    /// <summary>
+    /// Thread-safe non-blocking queue.
+    /// </summary>
+    /// <typeparam name="T">Type of elements in the queue</typeparam>
     public class Queue<T> : IEnumerable<T>, IReadOnlyCollection<T>
     {
         private class Node
@@ -24,6 +28,9 @@ namespace ParallelNet.Collection
 
         public int Count => count;
 
+        /// <summary>
+        /// Creates an empty queue.
+        /// </summary>
         public Queue()
         {
             Node sentinel = new Node()
@@ -36,6 +43,10 @@ namespace ParallelNet.Collection
             Interlocked.Exchange(ref tail, sentinel);
         }
 
+        /// <summary>
+        /// Enqueues a value in the queue.
+        /// </summary>
+        /// <param name="value">Value to enqueue</param>
         public void Enqueue(in T value)
         {
             Node newNode = new Node()
@@ -72,6 +83,10 @@ namespace ParallelNet.Collection
             }
         }
 
+        /// <summary>
+        /// Dequeues the value.
+        /// </summary>
+        /// <returns>Value if queue is not empty, else None</returns>
         public Result<T, None> Dequeue()
         {
             while (true)
@@ -99,6 +114,17 @@ namespace ParallelNet.Collection
                     return next.data.Value ?? throw new Exception("Unexpected error");
                 }
             }
+        }
+
+        /// <summary>
+        /// Clears the queue. This method is not thread-safe.
+        /// </summary>
+        public void Clear()
+        {
+            head.next = null;
+            tail = head;
+            Interlocked.Exchange(ref count, 0);
+            Interlocked.Increment(ref version);
         }
 
         public IEnumerator<T> GetEnumerator()

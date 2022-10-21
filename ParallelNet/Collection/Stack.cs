@@ -112,19 +112,18 @@ namespace ParallelNet.Collection
         {
             get
             {
-                bool empty = head == null;
-                Interlocked.MemoryBarrier();
-
-                return empty;
+                return head == null;
             }
         }
 
         /// <summary>
-        /// Clears the stack.
+        /// Clears the stack. This method is not thread-safe.
         /// </summary>
         public void Clear()
         {
-            while (Pop().ResultType == Result<T, None>.Type.Success) { }
+            head = null;
+            Interlocked.Exchange(ref count, 0);
+            Interlocked.Increment(ref version);
         }
 
         public int Count => count;
