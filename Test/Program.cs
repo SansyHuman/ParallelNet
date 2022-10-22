@@ -3,28 +3,91 @@ using ParallelNet.Lock;
 
 using System.Diagnostics;
 
-ParallelNet.Collection.Stack<int> stack = new ParallelNet.Collection.Stack<int>();
+ParallelNet.Collection.SortedDictionary<int, string> dict = new ParallelNet.Collection.SortedDictionary<int, string>();
+Action<int, string> action = (i, s) => Console.WriteLine($"{i}, {s}");
 
-stack.Push(1);
-stack.Push(2);
-stack.Push(3);
-stack.Push(4);
+dict.Add(1, "A");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(2, "B");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(3, "C");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(4, "D");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(5, "E");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(6, "F");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(7, "G");
+dict.Inorder(action);
+Console.WriteLine();
+dict.Add(8, "H");
+dict.Inorder(action);
+Console.WriteLine();
 
-stack.Clear();
+bool removed = dict.Remove(2);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(1);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(4);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(3);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(6);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(5);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(8);
+dict.Inorder(action);
+Console.WriteLine();
+removed = dict.Remove(7);
+dict.Inorder(action);
+Console.WriteLine();
 
-stack.Push(1);
-stack.Push(2);
-stack.Push(3);
-stack.Push(4);
+ParallelNet.Collection.ArrayList<string> list = new ParallelNet.Collection.ArrayList<string>();
 
-foreach (int i in stack)
+list.Add("H");
+list.Add("B");
+list.Add("O");
+list.Add("T");
+
+list.Clear();
+
+list.Add("H");
+list.Add("B");
+list.Add("O");
+list.Add("T");
+
+foreach (string i in list)
+{
     Console.WriteLine(i);
+}
 
-int cnt = stack.Count;
+int cnt = list.Count;
 
 for (int i = 0; i < cnt; i++)
 {
-    Console.WriteLine(stack.Pop().ResultValue);
+    Console.WriteLine(list[i]);
+}
+
+list[0] = "A";
+list[2] = "D";
+
+for (int i = 0; i < cnt; i++)
+{
+    Console.WriteLine(list.PopBack().ResultValue);
 }
 
 List<Thread> threads = new List<Thread>();
@@ -35,7 +98,7 @@ for (int i = 0; i < Environment.ProcessorCount; i++)
     {
         for (int j = 0; j < workPerThread * 2; j++)
         {
-            stack.Push(1);
+            list.Add("A");
         }
     }));
 
@@ -43,7 +106,7 @@ for (int i = 0; i < Environment.ProcessorCount; i++)
     {
         for (int j = 0; j < workPerThread; j++)
         {
-            if (stack.Pop().ResultType == Result<int, None>.Type.Failure)
+            if (list.PopBack().ResultType == Result<string, None>.Type.Failure)
             {
                 j--;
                 continue;
@@ -56,11 +119,13 @@ threads.ForEach(t => t.Start());
 threads.ForEach(t => t.Join());
 
 int expected = workPerThread * Environment.ProcessorCount;
-int count = stack.Count;
+int count = list.Count;
 int real = 0;
 
-while (stack.Pop().ResultType == Result<int, None>.Type.Success)
+while (list.PopBack().ResultType == Result<string, None>.Type.Success)
     real++;
+
+list.Reduce();
 
 Console.WriteLine(expected == real && expected == count);
 

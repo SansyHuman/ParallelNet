@@ -1,9 +1,12 @@
-﻿using System;
+﻿using ParallelNet.Common;
+
+using System;
 using System.Buffers;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Numerics;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -48,12 +51,27 @@ namespace ParallelNet.Collection
             internal WriteOperation writeOp;
         }
 
-        private T[][] memory;
+        private T[]?[] memory;
         private ArrayPool<T> pool;
         private Descriptor descriptor;
+        private ulong version;
         private const int FIRST_BUCKET_SIZE = 8;
 
-        public ArrayList()
+        private IEqualityComparer<T> comparer;
+
+        /// <summary>
+        /// Creates an empty list.
+        /// </summary>
+        public ArrayList() : this(EqualityComparer<T>.Default)
+        {
+            
+        }
+
+        /// <summary>
+        /// Creates an empty list with comparer.
+        /// </summary>
+        /// <param name="comparer">Equality comparer</param>
+        public ArrayList(IEqualityComparer<T> comparer)
         {
             memory = new T[29][];
             Array.Fill(memory, null);
@@ -63,9 +81,12 @@ namespace ParallelNet.Collection
                 count = 0,
                 writeOp = new Descriptor.WriteOperation()
             };
+            version = 0;
 
             memory[0] = pool.Rent(FIRST_BUCKET_SIZE);
-            Array.Clear(memory[0], 0, FIRST_BUCKET_SIZE);
+            Array.Clear(memory[0] ?? throw new Exception("Unexpected error"), 0, FIRST_BUCKET_SIZE);
+
+            this.comparer = comparer;
         }
 
         private void AllocateBucket(int bucket)
@@ -111,7 +132,7 @@ namespace ParallelNet.Collection
             int pos = index + FIRST_BUCKET_SIZE;
             int hibit = HighestBit(pos);
             int idx = pos ^ (1 << hibit);
-            return ref memory[hibit - HighestBit(FIRST_BUCKET_SIZE)][idx];
+            return ref (memory[hibit - HighestBit(FIRST_BUCKET_SIZE)] ?? throw new ArgumentOutOfRangeException(nameof(index)))[idx];
         }
 
         private void CompleteWrite(ref Descriptor.WriteOperation writeOp)
@@ -120,11 +141,29 @@ namespace ParallelNet.Collection
             {
                 Interlocked.MemoryBarrier();
                 Interlocked.CompareExchange(ref At(writeOp.location), writeOp.newValue, writeOp.oldValue);
+                Interlocked.Increment(ref version);
                 writeOp.pending = false;
             }
         }
 
-        public T this[int index] { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
+        public T this[int index] 
+        { 
+            get
+            {
+                if (index < 0 || index >= Count)
+                    throw new ArgumentOutOfRangeException(nameof(index));
+
+                return At(index);
+            }
+            set
+            {
+                if (index < 0 || index >= Count)
+                    throw new ArgumentOutOfRangeException(nameof(index));
+
+                At(index) = value;
+                Interlocked.Increment(ref version);
+            }
+        }
 
         public int Count
         {
@@ -141,7 +180,7 @@ namespace ParallelNet.Collection
             }
         }
 
-        public bool IsReadOnly => throw new NotImplementedException();
+        public bool IsReadOnly => false;
 
         public void Add(T item)
         {
@@ -168,54 +207,246 @@ namespace ParallelNet.Collection
                 };
 
                 Interlocked.MemoryBarrier();
-            } while (Interlocked.CompareExchange(ref descriptor, next, current) == current);
+            } while (Interlocked.CompareExchange(ref descriptor, next, current) != current);
 
             CompleteWrite(ref next.writeOp);
         }
 
+        /// <summary>
+        /// Removes an element from the back of the list.
+        /// </summary>
+        /// <returns>Removed element if succeeded, else None</returns>
+        public Result<T, None> PopBack()
+        {
+            Descriptor current;
+            Descriptor next;
+            T elem;
+
+            do
+            {
+                current = descriptor;
+                CompleteWrite(ref current.writeOp);
+                if (current.count <= 0)
+                    return (Result<T, None>)None.Value;
+
+                elem = At(current.count - 1);
+                next = new Descriptor()
+                {
+                    count = current.count - 1,
+                    writeOp = new Descriptor.WriteOperation()
+                };
+
+                Interlocked.MemoryBarrier();
+            } while (Interlocked.CompareExchange(ref descriptor, next, current) != current);
+
+            Interlocked.Increment(ref version);
+            return elem;
+        }
+
+        /// <inheritdoc/>
+        /// <remarks>This method is not thread-safe</remarks>
         public void Clear()
         {
-            throw new NotImplementedException();
+            descriptor = new Descriptor()
+            {
+                count = 0,
+                writeOp = new Descriptor.WriteOperation()
+            };
+            for (int i = 1; i < memory.Length; i++)
+            {
+                T[]? mem = memory[i];
+                if (mem == null)
+                    break;
+                pool.Return(mem, true);
+                memory[i] = null;
+            }
+
+            Array.Clear(memory[0] ?? throw new Exception("Unexpected error"), 0, FIRST_BUCKET_SIZE);
+            Interlocked.Increment(ref version);
+        }
+
+        /// <summary>
+        /// Deallocates empty spaces so that the total space is about 4 times of number of elements.
+        /// This method is not thread-safe.
+        /// </summary>
+        public void Reduce()
+        {
+            int pos = Count + FIRST_BUCKET_SIZE - 1;
+            int hibit = HighestBit(pos);
+            int bucket = hibit - HighestBit(FIRST_BUCKET_SIZE) + 2;
+
+            for (int i = bucket; i < memory.Length; i++)
+            {
+                T[]? mem = memory[i];
+                if (mem == null)
+                    break;
+                pool.Return(mem, true);
+                memory[i] = null;
+            }
         }
 
         public bool Contains(T item)
         {
-            throw new NotImplementedException();
+            for (int i = 0; i < Count; i++)
+            {
+                T elem = At(i);
+                Interlocked.MemoryBarrier();
+
+                if (comparer.Equals(item, elem))
+                    return true;
+            }
+
+            return false;
         }
 
+        /// <inheritdoc/>
+        /// <remarks>This method is not thread-safe</remarks>
         public void CopyTo(T[] array, int arrayIndex)
         {
-            throw new NotImplementedException();
+            if (array == null)
+                throw new ArgumentNullException(nameof(array));
+
+            if (arrayIndex + Count > array.Length)
+                throw new ArgumentOutOfRangeException(nameof(arrayIndex));
+
+            for (int i = 0; i < Count; i++)
+                array[arrayIndex + i] = At(i);
         }
 
         public IEnumerator<T> GetEnumerator()
         {
-            throw new NotImplementedException();
+            return new Enumerator(this);
         }
 
         public int IndexOf(T item)
         {
-            throw new NotImplementedException();
+            for (int i = 0; i < Count; i++)
+            {
+                T elem = At(i);
+                Interlocked.MemoryBarrier();
+
+                if (comparer.Equals(item, elem))
+                    return i;
+            }
+
+            return -1;
         }
 
+        /// <inheritdoc/>
+        /// <remarks>This method is not thread-safe</remarks>
         public void Insert(int index, T item)
         {
-            throw new NotImplementedException();
+            if (index < 0 || index > Count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+
+            Add(item);
+            for (int i = Count - 1; i > index; i--)
+            {
+                this[i] = this[i - 1];
+            }
+            this[index] = item;
         }
 
+        /// <inheritdoc/>
+        /// <remarks>This method is not thread-safe</remarks>
         public bool Remove(T item)
         {
-            throw new NotImplementedException();
+            int index = IndexOf(item);
+            if (index == -1)
+                return false;
+
+            RemoveAt(index);
+            return true;
         }
 
+        /// <inheritdoc/>
+        /// <remarks>This method is not thread-safe</remarks>
         public void RemoveAt(int index)
         {
-            throw new NotImplementedException();
+            if (index < 0 || index >= Count)
+                throw new ArgumentOutOfRangeException(nameof(index));
+
+            T last = PopBack().ResultValue ?? throw new Exception("Unexpected error");
+            for (int i = index; i < Count - 1; i++)
+            {
+                this[i] = this[i + 1];
+            }
+            this[Count - 1] = last;
         }
 
         IEnumerator IEnumerable.GetEnumerator()
         {
-            throw new NotImplementedException();
+            return GetEnumerator();
+        }
+
+        private class Enumerator : IEnumerator<T>
+        {
+            private ArrayList<T> list;
+            private int index;
+            private ulong version;
+
+            internal Enumerator(ArrayList<T> list)
+            {
+                this.list = list;
+                index = -2;
+                version = list.version;
+            }
+
+            public T Current
+            {
+                get
+                {
+                    if (index == -2)
+                        throw new InvalidOperationException("Enumerator not started");
+                    if (index == -1)
+                        throw new InvalidOperationException("Enumerator ended");
+
+                    return list[index];
+                }
+            }
+
+            object IEnumerator.Current => Current;
+
+            public void Dispose()
+            {
+                index = -2;
+            }
+
+            public bool MoveNext()
+            {
+                if (version != list.version)
+                    throw new InvalidOperationException("ArrayList revised");
+
+                if (index == -2)
+                {
+                    if (list.Count == 0)
+                        index = -1;
+                    else
+                    {
+                        index = 0;
+                        return true;
+                    }
+                }
+
+                if (index == -1)
+                    return false;
+
+                index++;
+                if (index >= list.Count)
+                {
+                    index = -1;
+                    return false;
+                }
+                return true;
+            }
+
+            public void Reset()
+            {
+                if (version != list.version)
+                    throw new InvalidOperationException("ArrayList revised");
+
+                index = -2;
+            }
         }
     }
 }
