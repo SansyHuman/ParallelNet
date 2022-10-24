@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
@@ -18,36 +19,158 @@ namespace ParallelNet.Collection
                 Red, Black
             }
 
-            internal KeyValuePair<K, V>? kv;
             internal Node parent;
-            internal Node? left;
-            internal Node? right;
+            internal Node left;
+            internal Node right;
+            internal KeyValuePair<K, V>? kv;
             internal Color color;
+            internal bool isLeaf;
+            internal int flag;
+            internal int marker;
 
-            internal Node(in KeyValuePair<K, V> kv, Node parent)
+            internal const int TRUE = 1;
+            internal const int FALSE = 0;
+            internal const int DEFAULT_MARKER = -1;
+
+            internal static Node DummyNode
             {
-                this.kv = kv;
-                this.parent = parent;
-                left = null;
-                right = null;
-                color = Color.Black;
+                get
+                {
+                    return new Node()
+                    {
+                        parent = null,
+                        left = LeafNode,
+                        right = LeafNode,
+                        kv = null,
+                        color = Color.Black,
+                        isLeaf = false,
+                        flag = FALSE,
+                        marker = DEFAULT_MARKER
+                    };
+                }
             }
 
-            internal Node()
+            internal static Node CreateNode(in K key, in V value)
             {
-                kv = null;
-                parent = this;
-                left = null;
-                right = null;
-                color = Color.Black;
+                Node node = new Node()
+                {
+                    parent = null,
+                    left = LeafNode,
+                    right = LeafNode,
+                    kv = new KeyValuePair<K, V>(key, value),
+                    color = Color.Red,
+                    isLeaf = false,
+                    flag = FALSE,
+                    marker = DEFAULT_MARKER
+                };
+
+                node.left.parent = node;
+                node.right.parent = node;
+
+                return node;
+            }
+
+            internal static Node LeafNode
+            {
+                get
+                {
+                    return new Node()
+                    {
+                        left = null,
+                        right = null,
+                        kv = null,
+                        color = Color.Black,
+                        isLeaf = true,
+                        flag = FALSE,
+                        marker = DEFAULT_MARKER
+                    };
+                }
+            }
+
+            internal bool IsRoot(Node root)
+            {
+                if (parent == root)
+                    return true;
+                return false;
+            }
+
+            internal bool IsLeft
+            {
+                get
+                {
+                    Node parent = this.parent;
+                    if (this == parent.left)
+                        return true;
+                    return false;
+                }
+            }
+
+            internal Node? Uncle
+            {
+                get
+                {
+                    if (this.parent.isLeaf)
+                        return null;
+
+                    if (this.parent.parent.isLeaf)
+                        return null;
+
+                    Node parent = this.parent;
+                    Node grandparent = parent.parent;
+                    if (parent == grandparent.left)
+                        return grandparent.right;
+                    return grandparent.left;
+                }
+            }
+
+            internal Node ReplaceParent(Node root)
+            {
+                Node child;
+                if (left.isLeaf)
+                {
+                    child = right;
+                    left = null;
+                }
+                else
+                {
+                    child = left;
+                    right = null;
+                }
+
+                if (IsRoot(root))
+                {
+                    child.parent = root;
+                    root.left = child;
+                    parent = null;
+                }
+                else if (IsLeft)
+                {
+                    child.parent = parent;
+                    parent.left = child;
+                }
+                else
+                {
+                    child.parent = parent;
+                    parent.right = child;
+                }
+
+                return child;
             }
         }
 
-        private readonly Node rootParent;
-        private Node? root;
+        private Node root;
         private IComparer<K> comparer;
         private int count;
         private ulong version;
+
+        private static ThreadLocal<System.Collections.Generic.List<Node?>> nodesOwnFlag;
+        private static ThreadLocal<int> threadIndex;
+
+        static SortedDictionary()
+        {
+            nodesOwnFlag = new ThreadLocal<System.Collections.Generic.List<Node?>>();
+            threadIndex = new ThreadLocal<int>();
+        }
 
         public SortedDictionary() : this(Comparer<K>.Default)
         {
@@ -56,57 +179,87 @@ namespace ParallelNet.Collection
 
         public SortedDictionary(IComparer<K> keyComparer)
         {
-            rootParent = new Node();
-            root = null;
+            Node dummy1 = Node.DummyNode;
+            Node dummy2 = Node.DummyNode;
+            Node dummy3 = Node.DummyNode;
+            Node dummy4 = Node.DummyNode;
+            Node dummy5 = Node.DummyNode;
+            Node dummySibling = Node.DummyNode;
+            root = Node.DummyNode;
+
+            dummySibling.parent = root;
+            root.parent = dummy5;
+            dummy5.parent = dummy4;
+            dummy4.parent = dummy3;
+            dummy3.parent = dummy2;
+            dummy2.parent = dummy1;
+
+            dummy1.left = dummy2;
+            dummy2.left = dummy3;
+            dummy3.left = dummy4;
+            dummy4.left = dummy5;
+            dummy5.left = root;
+            root.right = dummySibling;
+
             comparer = keyComparer;
             count = 0;
             version = 0;
         }
 
-        private void LeftRotate(Node x)
+        private void LeftRotate(Node node)
         {
-            Node y = x.right ?? throw new Exception("Unexpected error");
-            
-            x.right = y.left;
-            if (y.left != null)
-                y.left.parent = x;
+            if (node.isLeaf)
+                throw new Exception("Invalid rotate on null node");
 
-            y.parent = x.parent;
-            if (x.parent == rootParent)
-            {
-                root = y;
-                rootParent.left = y;
-            }
-            else if (x == x.parent.left)
-                x.parent.left = y;
+            if (node.right.isLeaf)
+                throw new Exception("Invalid rotate on node with null right child");
+
+            Node right = node.right;
+            right.parent = node.parent;
+            if (node.IsLeft)
+                node.parent.left = right;
             else
-                x.parent.right = y;
+                node.parent.right = right;
 
-            y.left = x;
-            x.parent = y;
+            node.parent = right;
+
+            node.right = right.left;
+            right.left = node;
+
+            if (node.right != null)
+            {
+                node.right.parent = node;
+            }
+
+            Interlocked.Increment(ref version);
         }
 
-        private void RightRotate(Node x)
+        private void RightRotate(Node node)
         {
-            Node y = x.left ?? throw new Exception("Unexpected error");
-            
-            x.left = y.right;
-            if (y.right != null)
-                y.right.parent = x;
+            if (node.isLeaf)
+                throw new Exception("Invalid rotate on null node");
 
-            y.parent = x.parent;
-            if (x.parent == rootParent)
-            {
-                root = y;
-                rootParent.left = y;
-            }
-            else if (x == x.parent.left)
-                x.parent.left = y;
+            if (node.left.isLeaf)
+                throw new Exception("Invalid rotate on node with null left child");
+
+            Node left = node.left;
+            left.parent = node.parent;
+            if (node.IsLeft)
+                node.parent.left = left;
             else
-                x.parent.right = y;
+                node.parent.right = left;
 
-            y.right = x;
-            x.parent = y;
+            node.parent = left;
+
+            node.left = left.right;
+            left.right = node;
+
+            if (node.left != null)
+            {
+                node.left.parent = node;
+            }
+
+            Interlocked.Increment(ref version);
         }
 
         public V this[K key] => throw new NotImplementedException();
@@ -130,96 +283,203 @@ namespace ParallelNet.Collection
             Add(new KeyValuePair<K, V>(key, value));
         }
 
-        public void Add(KeyValuePair<K, V> item)
+        // True if inserted, false if revised.
+        private bool Insert(Node newNode)
         {
-            Node z = rootParent;
-            Node? y = root;
+            K key = (newNode.kv ?? throw new Exception("Unexpected error")).Key;
 
-            while (y != null)
+            int expected = Node.FALSE;
+            while (Interlocked.CompareExchange(ref root.flag, Node.TRUE, expected) != expected) { }
+            Interlocked.MemoryBarrier();
+
+            if (root.left.isLeaf)
             {
-                z = y;
+                root.left = null;
+                newNode.flag = Node.TRUE;
+                root.left = newNode;
+                newNode.parent = root;
+                root.flag = Node.FALSE;
 
-                int comp = comparer.Compare(item.Key, (y.kv ?? throw new Exception("Unexpected error")).Key);
-                if (comp < 0)
-                    y = y.left;
-                else if (comp == 0)
+                Interlocked.Increment(ref count);
+                Interlocked.Increment(ref version);
+
+                return true;
+            }
+
+            root.flag = Node.FALSE;
+
+        Restart:
+            Node z = null;
+            Node currNode = root.left;
+            expected = Node.FALSE;
+            if (Interlocked.CompareExchange(ref currNode.flag, Node.TRUE, expected) != expected)
+                goto Restart;
+            Interlocked.MemoryBarrier();
+
+            while (!currNode.isLeaf)
+            {
+                z = currNode;
+                int cmp = comparer.Compare(key, (currNode.kv ?? throw new Exception("Unexpected error")).Key);
+                if (cmp > 0)
+                    currNode = currNode.right;
+                else if (cmp == 0)
                 {
-                    y.kv = item;
-                    return;
+                    currNode.kv = newNode.kv;
+                    z.flag = Node.FALSE;
+
+                    Interlocked.Increment(ref version);
+                    return false;
                 }
                 else
-                    y = y.right;
+                    currNode = currNode.left;
+
+                expected = Node.FALSE;
+                if (Interlocked.CompareExchange(ref currNode.flag, Node.TRUE, expected) != expected)
+                {
+                    z.flag = Node.FALSE;
+                    goto Restart;
+                }
+
+                if (!currNode.isLeaf)
+                    z.flag = Node.FALSE;
             }
 
-            Node x = new Node(item, z);
-            if (z == rootParent)
+            Debug.Assert(z != null);
+
+            newNode.flag = Node.TRUE;
+            if (!SetupLocalAreaForInsert(z))
             {
-                root = x;
-                rootParent.left = x;
+                currNode.flag = Node.FALSE;
+                z.flag = Node.FALSE;
+                goto Restart;
             }
-            else if (comparer.Compare(item.Key, (z.kv ?? throw new Exception("Unexpected error")).Key) < 0)
-                z.left = x;
-            else
-                z.right = x;
 
-            x.color = Node.Color.Red;
-            InsertFixup(x);
+            newNode.parent = z;
+            int cmp2 = comparer.Compare(key, (z.kv ?? throw new Exception("Unexpected error")).Key);
+            if (cmp2 < 0)
+                z.left = newNode;
+            else if (cmp2 > 0)
+                z.right = newNode;
+            else
+                throw new Exception("Unexpected error");
 
             Interlocked.Increment(ref count);
             Interlocked.Increment(ref version);
+            return true;
+        }
+
+        public void Add(KeyValuePair<K, V> item)
+        {
+            ClearLocalArea();
+
+            Node newNode = Node.CreateNode(item.Key, item.Value);
+
+            if (!Insert(newNode))
+                return;
+
+            Node currNode = newNode;
+            Node parent = currNode.parent;
+            Node? uncle = null, grandparent = null;
+
+            System.Collections.Generic.List<Node?> localArea = new System.Collections.Generic.List<Node?>();
+            localArea.Add(currNode);
+            localArea.Add(parent);
+
+            if (parent != null)
+                grandparent = parent.parent;
+
+            if (grandparent != null)
+            {
+                if (grandparent.left == parent)
+                    uncle = grandparent.right;
+                else
+                    uncle = grandparent.left;
+            }
+
+            localArea.Add(uncle);
+            localArea.Add(grandparent);
+
+            if (currNode.IsRoot(root))
+            {
+                currNode.color = Node.Color.Black;
+                foreach (var node in localArea)
+                {
+                    if (node != null)
+                        node.flag = Node.FALSE;
+                }
+
+                return;
+            }
+
+            while (true)
+            {
+                if (currNode.IsRoot(root))
+                {
+                    currNode.color = Node.Color.Black;
+                    break;
+                }
+
+                parent = currNode.parent;
+
+                if (parent.color == Node.Color.Black)
+                    break;
+
+                uncle = currNode.Uncle;
+
+                if (parent.color == Node.Color.Red && uncle != null && uncle.color == Node.Color.Red)
+                {
+                    parent.color = Node.Color.Black;
+                    uncle.color = Node.Color.Black;
+                    parent.parent.color = Node.Color.Red;
+
+                    currNode = MoveInserterUp(currNode, localArea);
+                    continue;
+                }
+
+                if (parent.IsLeft)
+                {
+                    if (!currNode.IsLeft)
+                    {
+                        LeftRotate(parent);
+                        currNode = parent;
+                    }
+                    parent = currNode.parent;
+                    uncle = currNode.Uncle;
+
+                    parent.parent.color = Node.Color.Red;
+                    parent.color = Node.Color.Black;
+                    RightRotate(parent.parent);
+
+                    break;
+                }
+                else
+                {
+                    if (currNode.IsLeft)
+                    {
+                        RightRotate(parent);
+                        currNode = parent;
+                    }
+                    parent = currNode.parent;
+                    uncle = currNode.Uncle;
+
+                    parent.parent.color = Node.Color.Red;
+                    parent.color = Node.Color.Black;
+                    LeftRotate(parent.parent);
+
+                    break;
+                }
+            }
+
+            foreach (var node in localArea)
+            {
+                if (node != null)
+                    node.flag = Node.FALSE;
+            }
         }
 
         private void InsertFixup(Node x)
         {
-            while (x.parent.color == Node.Color.Red)
-            {
-                if (x.parent == x.parent.parent.left)
-                {
-                    Node? y = x.parent.parent.right;
-                    if (y != null && y.color == Node.Color.Red)
-                    {
-                        x.parent.color = Node.Color.Black;
-                        y.color = Node.Color.Black;
-                        x.parent.parent.color = Node.Color.Red;
-                        x = x.parent.parent;
-                    }
-                    else
-                    {
-                        if (x == x.parent.right)
-                        {
-                            x = x.parent;
-                            LeftRotate(x);
-                        }
-                        x.parent.color = Node.Color.Black;
-                        x.parent.parent.color = Node.Color.Red;
-                        RightRotate(x.parent.parent);
-                    }
-                }
-                else // x.parent == x.parent.parent.right
-                {
-                    Node? y = x.parent.parent.left;
-                    if (y != null && y.color == Node.Color.Red)
-                    {
-                        x.parent.color = Node.Color.Black;
-                        y.color = Node.Color.Black;
-                        x.parent.parent.color = Node.Color.Red;
-                        x = x.parent.parent;
-                    }
-                    else
-                    {
-                        if (x == x.parent.left)
-                        {
-                            x = x.parent;
-                            RightRotate(x);
-                        }
-                        x.parent.color = Node.Color.Black;
-                        x.parent.parent.color = Node.Color.Red;
-                        LeftRotate(x.parent.parent);
-                    }
-                }
-            }
-
-            (root ?? throw new Exception("Unexpected error")).color = Node.Color.Black;
+            
         }
 
         public void Clear()
@@ -247,179 +507,484 @@ namespace ParallelNet.Collection
             throw new NotImplementedException();
         }
 
-        public bool Remove(K key)
+        private Node? Find(K key)
         {
-            Node? current = root;
-            while (current != null)
+            int expect;
+            Node rootNode;
+
+        Restart:
+            do
             {
-                int comp = comparer.Compare(key, (current.kv ?? throw new Exception("Unexpected error")).Key);
-                if (comp == 0)
-                {
-                    Delete(current);
-                    return true;
-                }
-                else if (comp < 0)
-                    current = current.left;
-                else
-                    current = current.right;
+                rootNode = root.left;
+                expect = Node.FALSE;
             }
-            return false;
+            while (Interlocked.CompareExchange(ref rootNode.flag, Node.TRUE, expect) != expect);
+            Interlocked.MemoryBarrier();
+
+            Node y = rootNode;
+            Node z = null;
+
+            while (!y.isLeaf)
+            {
+                z = y;
+                int cmp = comparer.Compare(key, (y.kv ?? throw new Exception("Unexpected error")).Key);
+                if (cmp == 0)
+                    return y;
+                else if (cmp > 0)
+                    y = y.right;
+                else
+                    y = y.left;
+
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref y.flag, Node.TRUE, expect) != expect)
+                {
+                    z.flag = Node.FALSE;
+                    Thread.Sleep(10);
+                    goto Restart;
+                }
+                Interlocked.MemoryBarrier();
+
+                if (!y.isLeaf)
+                    z.flag = Node.FALSE;
+            }
+
+            return null;
         }
 
-        private void Delete(Node z)
+        private Node? FindSuccessor(Node deleteNode)
         {
-            Node y;
-            if (z.left == null || z.right == null)
+            int expect;
+
+            Node y = deleteNode.right;
+            Node z = null;
+
+            while (!y.left.isLeaf)
+            {
+                z = y;
+                y = y.left;
+
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref y.flag, Node.TRUE, expect) != expect)
+                {
+                    z.flag = Node.FALSE;
+                    return null;
+                }
+                Interlocked.MemoryBarrier();
+
+                z.flag = Node.FALSE;
+            }
+
+            return y;
+        }
+
+        public bool Remove(K key)
+        {
+            ClearLocalArea();
+
+        Restart:
+            Node? z = Find(key);
+            Node? y;
+            if (z == null)
+                return false;
+
+            if (z.left.isLeaf || z.right.isLeaf)
                 y = z;
             else
-                y = Successor(z);
+                y = FindSuccessor(z);
 
-            Node? x;
-            if (y.left != null)
-                x = y.left;
-            else
-                x = y.right;
-            if (x != null)
-                x.parent = y.parent;
+            if (y == null)
+            {
+                z.flag = Node.FALSE;
+                goto Restart;
+            }
 
-            if (y.parent == rootParent)
+            if (!SetupLocalAreaForDelete(y, z))
             {
-                root = x;
-                rootParent.left = x;
+                y.flag = Node.FALSE;
+                if (y != z)
+                    z.flag = Node.FALSE;
+                goto Restart;
             }
-            else
-            {
-                if (y == y.parent.left)
-                    y.parent.left = x;
-                else
-                    y.parent.right = x;
-            }
+
+            Node replaceNode = y.ReplaceParent(root);
 
             if (y != z)
                 z.kv = y.kv;
-            if (y.color == Node.Color.Black && x != null)
-                DeleteFixup(x);
+
+            if (!IsInLocalArea(z))
+                z.flag = Node.FALSE;
+
+            if (y.color == Node.Color.Black)
+                replaceNode = RemoveFixup(replaceNode, z);
+
+            while (!ReleaseMarkersAbove(replaceNode.parent, z)) { }
+
+            ClearLocalArea();
 
             Interlocked.Decrement(ref count);
             Interlocked.Increment(ref version);
+
+            return true;
         }
 
-        private void DeleteFixup(Node x)
+        private Node RemoveFixup(Node node, Node z)
         {
-            while (x != root && x.color == Node.Color.Black)
+            while (node.IsRoot(root) && node.color == Node.Color.Black)
             {
-                if (x == x.parent.left)
+                Node brotherNode;
+                if (node.IsLeft)
                 {
-                    Node? w = x.parent.right;
-                    if (w != null && w.color == Node.Color.Red)
+                    brotherNode = node.parent.right;
+                    if (brotherNode.color == Node.Color.Red)
                     {
-                        w.color = Node.Color.Black;
-                        x.parent.color = Node.Color.Red;
-                        LeftRotate(x.parent);
-                        w = x.parent.right;
+                        brotherNode.color = Node.Color.Black;
+                        node.parent.color = Node.Color.Red;
+                        LeftRotate(node.parent);
+                        brotherNode = node.parent.right;
+
+                        FixUpCase1(node, brotherNode);
                     }
 
-                    if (w != null &&
-                        w.left != null &&
-                        w.left.color == Node.Color.Black &&
-                        w.right != null &&
-                        w.right.color == Node.Color.Black)
+                    if (brotherNode.left.color == Node.Color.Black && brotherNode.right.color == Node.Color.Black)
                     {
-                        w.color = Node.Color.Red;
-                        x = x.parent;
+                        brotherNode.color = Node.Color.Red;
+                        node = MoveDeleterUp(node);
+                    }
+                    else if (brotherNode.right.color == Node.Color.Black)
+                    {
+                        brotherNode.left.color = Node.Color.Black;
+                        brotherNode.color = Node.Color.Red;
+                        RightRotate(brotherNode);
+                        brotherNode = node.parent.right;
+
+                        FixUpCase3(node, brotherNode);
                     }
                     else
                     {
-                        if (w != null &&
-                            w.right != null &&
-                            w.right.color == Node.Color.Black)
-                        {
-                            if (w.left != null)
-                                w.left.color = Node.Color.Black;
-                            w.color = Node.Color.Red;
-                            RightRotate(w);
-                            w = x.parent.right;
-                        }
+                        brotherNode.color = node.parent.color;
+                        node.parent.color = Node.Color.Black;
+                        brotherNode.right.color = Node.Color.Black;
+                        LeftRotate(node.parent);
 
-                        if (w != null)
-                            w.color = x.parent.color;
-                        x.parent.color = Node.Color.Black;
-                        if (w != null && w.right != null)
-                            w.right.color = Node.Color.Black;
-                        LeftRotate(x.parent);
-                        x = root ?? throw new Exception("Unexpected error");
+                        node = node.parent;
+                        break;
                     }
                 }
-                else // x == x.parent.right
+                else
                 {
-                    Node? w = x.parent.left;
-                    if (w != null && w.color == Node.Color.Red)
+                    brotherNode = node.parent.left;
+                    if (brotherNode.color == Node.Color.Red)
                     {
-                        w.color = Node.Color.Black;
-                        x.parent.color = Node.Color.Red;
-                        RightRotate(x.parent);
-                        w = x.parent.left;
+                        brotherNode.color = Node.Color.Black;
+                        node.parent.color = Node.Color.Red;
+                        RightRotate(node.parent);
+                        brotherNode = node.parent.left;
+
+                        FixUpCase1R(node, brotherNode);
                     }
 
-                    if (w != null &&
-                        w.left != null &&
-                        w.left.color == Node.Color.Black &&
-                        w.right != null &&
-                        w.right.color == Node.Color.Black)
+                    if (brotherNode.left.color == Node.Color.Black && brotherNode.right.color == Node.Color.Black)
                     {
-                        w.color = Node.Color.Red;
-                        x = x.parent;
+                        brotherNode.color = Node.Color.Red;
+                        node = MoveDeleterUp(node);
+                    }
+                    else if (brotherNode.left.color == Node.Color.Black)
+                    {
+                        brotherNode.right.color = Node.Color.Black;
+                        brotherNode.color = Node.Color.Red;
+                        LeftRotate(brotherNode);
+                        brotherNode = node.parent.left;
+
+                        FixUpCase3R(node, brotherNode);
                     }
                     else
                     {
-                        if (w != null &&
-                            w.left != null &&
-                            w.left.color == Node.Color.Black)
-                        {
-                            if (w.right != null)
-                                w.right.color = Node.Color.Black;
-                            w.color = Node.Color.Red;
-                            LeftRotate(w);
-                            w = x.parent.left;
-                        }
+                        brotherNode.color = node.parent.color;
+                        node.parent.color = Node.Color.Black;
+                        brotherNode.left.color = Node.Color.Black;
+                        RightRotate(node.parent);
 
-                        if (w != null)
-                            w.color = x.parent.color;
-                        x.parent.color = Node.Color.Black;
-                        if (w != null && w.left != null)
-                            w.left.color = Node.Color.Black;
-                        RightRotate(x.parent);
-                        x = root;
+                        node = node.parent;
+                        break;
                     }
                 }
             }
 
-            if (x != null)
-                x.color = Node.Color.Black;
+            node.color = Node.Color.Black;
+            return node;
         }
 
-        private Node Successor(Node n)
+        private void CheckLocalAreaCreation()
         {
-            if (n.right != null)
-                return MinValue(n.right);
+            if (!nodesOwnFlag.IsValueCreated)
+                nodesOwnFlag.Value = new System.Collections.Generic.List<Node?>();
+        }
 
-            Node p = n.parent;
-            while (p != rootParent && n == p.right)
+        private void InitializeThreadID()
+        {
+            if (!threadIndex.IsValueCreated)
+                threadIndex.Value = Thread.CurrentThread.ManagedThreadId;
+        }
+
+        private void ClearLocalArea()
+        {
+            CheckLocalAreaCreation();
+
+            if (nodesOwnFlag.Value.Count == 0)
+                return;
+
+            foreach (var node in nodesOwnFlag.Value)
             {
-                n = p;
-                p = p.parent;
+                if (node != null)
+                    node.flag = Node.FALSE;
             }
 
-            return p;
+            nodesOwnFlag.Value.Clear();
         }
 
-        private Node MinValue(Node node)
+        private bool IsInLocalArea(Node targetNode)
         {
-            Node current = node;
-            while (current.left != null)
-                current = current.left;
+            CheckLocalAreaCreation();
 
-            return current;
+            foreach (var node in nodesOwnFlag.Value)
+            {
+                if (node == targetNode)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private bool HasNoOthersMarker(Node t, Node z, int tIDToIgnore)
+        {
+            if (t != z && t.marker != Node.DEFAULT_MARKER && t.marker != tIDToIgnore)
+                return false;
+
+            return true;
+        }
+
+        bool GetMarkersAbove(Node start, Node z, bool release)
+        {
+            InitializeThreadID();
+
+            int expect;
+
+            Node pos1, pos2, pos3, pos4;
+
+            pos1 = start.parent;
+            if (pos1 != z)
+            {
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref pos1.flag, Node.TRUE, expect) != expect)
+                    return false;
+
+                Interlocked.MemoryBarrier();
+            }
+
+            if (pos1 != start.parent || !HasNoOthersMarker(pos1, z, threadIndex.Value))
+            {
+                if (pos1 != z)
+                    pos1.flag = Node.FALSE;
+
+                return false;
+            }
+
+            pos2 = pos1.parent;
+            if (pos2 != z)
+            {
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref pos2.flag, Node.TRUE, expect) != expect)
+                {
+                    if (pos1 != z)
+                        pos1.flag = Node.FALSE;
+                    return false;
+                }
+                Interlocked.MemoryBarrier();
+            }
+
+            if (pos2 != pos1.parent || !HasNoOthersMarker(pos2, z, threadIndex.Value))
+            {
+                if (pos1 != z)
+                    pos1.flag = Node.FALSE;
+                if (pos2 != z)
+                    pos2.flag = Node.FALSE;
+                return false;
+            }
+
+            pos3 = pos2.parent;
+            if (pos3 != z)
+            {
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref pos3.flag, Node.TRUE, expect) != expect)
+                {
+                    if (pos1 != z)
+                        pos1.flag = Node.FALSE;
+                    if (pos2 != z)
+                        pos2.flag = Node.FALSE;
+                    return false;
+                }
+                Interlocked.MemoryBarrier();
+            }
+
+            if (pos3 != pos2.parent || !HasNoOthersMarker(pos3, z, threadIndex.Value))
+            {
+                if (pos1 != z)
+                    pos1.flag = Node.FALSE;
+                if (pos2 != z)
+                    pos2.flag = Node.FALSE;
+                if (pos3 != z)
+                    pos3.flag = Node.FALSE;
+                return false;
+            }
+
+            pos4 = pos3.parent;
+            if (pos4 != z)
+            {
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref pos4.flag, Node.TRUE, expect) != expect)
+                {
+                    if (pos1 != z)
+                        pos1.flag = Node.FALSE;
+                    if (pos2 != z)
+                        pos2.flag = Node.FALSE;
+                    if (pos3 != z)
+                        pos3.flag = Node.FALSE;
+                    return false;
+                }
+                Interlocked.MemoryBarrier();
+            }
+
+            if (pos4 != pos3.parent || !HasNoOthersMarker(pos4, z, threadIndex.Value))
+            {
+                if (pos1 != z)
+                    pos1.flag = Node.FALSE;
+                if (pos2 != z)
+                    pos2.flag = Node.FALSE;
+                if (pos3 != z)
+                    pos3.flag = Node.FALSE;
+                if (pos4 != z)
+                    pos4.flag = Node.FALSE;
+                return false;
+            }
+
+            pos1.marker = threadIndex.Value;
+            pos2.marker = threadIndex.Value;
+            pos3.marker = threadIndex.Value;
+            pos4.marker = threadIndex.Value;
+
+            if (release)
+            {
+                if (pos1 != z)
+                    pos1.flag = Node.FALSE;
+                if (pos2 != z)
+                    pos2.flag = Node.FALSE;
+                if (pos3 != z)
+                    pos3.flag = Node.FALSE;
+                if (pos4 != z)
+                    pos4.flag = Node.FALSE;
+            }
+
+            return true;
+        }
+
+        bool SetupLocalAreaForDelete(Node y, Node z)
+        {
+            CheckLocalAreaCreation();
+
+            int expect;
+
+            Node x = y.left;
+            if (y.left.isLeaf)
+                x = y.right;
+
+            expect = Node.FALSE;
+            if (Interlocked.CompareExchange(ref x.flag, Node.TRUE, expect) != expect)
+                return false;
+            Interlocked.MemoryBarrier();
+
+            Node yp = y.parent;
+            expect = Node.FALSE;
+            if (yp != z && Interlocked.CompareExchange(ref yp.flag, Node.TRUE, expect) != expect)
+            {
+                x.flag = Node.FALSE;
+                return false;
+            }
+            Interlocked.MemoryBarrier();
+
+            if (yp != y.parent)
+            {
+                x.flag = Node.FALSE;
+                if (yp != z)
+                    yp.flag = Node.FALSE;
+                return false;
+            }
+
+            Node w = y.parent.left;
+            if (y.IsLeft)
+                w = y.parent.right;
+
+            expect = Node.FALSE;
+            if (Interlocked.CompareExchange(ref w.flag, Node.TRUE, expect) != expect)
+            {
+                x.flag = Node.FALSE;
+                if (yp != z)
+                    yp.flag = Node.FALSE;
+                return false;
+            }
+            Interlocked.MemoryBarrier();
+
+            Node wlc = null, wrc = null;
+            if (!w.isLeaf)
+            {
+                wlc = w.left;
+                wrc = w.right;
+
+                expect = Node.FALSE;
+                if (Interlocked.CompareExchange(ref wlc.flag, Node.TRUE, expect) != expect)
+                {
+                    x.flag = Node.FALSE;
+                    w.flag = Node.FALSE;
+                    if (yp != z)
+                        yp.flag = Node.FALSE;
+                    return false;
+                }
+                Interlocked.MemoryBarrier();
+
+                if (Interlocked.CompareExchange(ref wrc.flag, Node.TRUE, expect) != expect)
+                {
+                    x.flag = Node.FALSE;
+                    w.flag = Node.FALSE;
+                    wlc.flag = Node.FALSE;
+                    if (yp != z)
+                        yp.flag = Node.FALSE;
+                    return false;
+                }
+            }
+
+            if (!GetMarkersAbove(yp, z, true))
+            {
+                x.flag = Node.FALSE;
+                w.flag = Node.FALSE;
+                if (!w.isLeaf)
+                {
+                    wlc.flag = Node.FALSE;
+                    wrc.flag = Node.FALSE;
+                }
+                if (yp != z)
+                    yp.flag = Node.FALSE;
+                return false;
+            }
+
+            nodesOwnFlag.Value.Add(x);
+            nodesOwnFlag.Value.Add(w);
+            nodesOwnFlag.Value.Add(yp);
+            if (!w.isLeaf)
+            {
+                nodesOwnFlag.Value.Add(wlc);
+                nodesOwnFlag.Value.Add(wrc);
+            }
+
+            return true;
         }
 
         public bool Remove(KeyValuePair<K, V> item)
@@ -435,30 +1000,6 @@ namespace ParallelNet.Collection
         IEnumerator IEnumerable.GetEnumerator()
         {
             throw new NotImplementedException();
-        }
-
-        public void Inorder(Action<K, V> forEach)
-        {
-            System.Collections.Generic.Stack<Node> s = new System.Collections.Generic.Stack<Node>();
-            Node? current = root;
-
-            while (current != null || s.Count != 0)
-            {
-                while (current != null)
-                {
-                    s.Push(current);
-                    current = current.left;
-                }
-
-                current = s.Pop();
-
-                forEach(
-                    (current.kv ?? throw new Exception("Unexpected exception")).Key,
-                    (current.kv ?? throw new Exception("Unexpected exception")).Value
-                    );
-
-                current = current.right;
-            }
         }
     }
 }
