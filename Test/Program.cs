@@ -3,59 +3,6 @@ using ParallelNet.Lock;
 
 using System.Diagnostics;
 
-ParallelNet.Collection.SortedDictionary<int, string> dict = new ParallelNet.Collection.SortedDictionary<int, string>();
-Action<int, string> action = (i, s) => Console.WriteLine($"{i}, {s}");
-
-dict.Add(1, "A");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(2, "B");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(3, "C");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(4, "D");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(5, "E");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(6, "F");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(7, "G");
-dict.Inorder(action);
-Console.WriteLine();
-dict.Add(8, "H");
-dict.Inorder(action);
-Console.WriteLine();
-
-bool removed = dict.Remove(2);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(1);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(4);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(3);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(6);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(5);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(8);
-dict.Inorder(action);
-Console.WriteLine();
-removed = dict.Remove(7);
-dict.Inorder(action);
-Console.WriteLine();
-
 ParallelNet.Collection.ArrayList<string> list = new ParallelNet.Collection.ArrayList<string>();
 
 list.Add("H");
